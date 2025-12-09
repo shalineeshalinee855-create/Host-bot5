@@ -38,10 +38,9 @@ LINKS_FILE = 'links.txt'
 
 upload_thread = None
 stop_event = threading.Event()
-# Global Application Instance
 application = None
 
-# --- Helper Functions (Load/Save Config, State, Admin Check - Same as before) ---
+# --- Helper Functions (Same as before) ---
 def load_config():
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, 'r') as f:
@@ -68,13 +67,11 @@ def get_admin_id():
     conf = load_config()
     return conf.get('admin_id', ADMIN_ID_PLACEHOLDER)
 
-# Decorator to check if the user is the admin
 def check_admin(func):
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
         user_id = update.effective_user.id
         admin_id = get_admin_id()
         if admin_id == ADMIN_ID_PLACEHOLDER:
-             # If admin_id is not set, allow the first user to run /start
              if func.__name__ == 'start':
                 return await func(update, context, *args, **kwargs)
         
@@ -150,7 +147,8 @@ async def worker_job(application: Application):
             url = links[current_index]
             
             await bot.send_message(admin_id, f"📥 Downloading Video #{current_index + 1}...")
-            file_path = await application.loop.run_in_executor(None, download_video, url, current_index + 1)
+            # Use asyncio.to_thread for blocking call
+            file_path = await asyncio.to_thread(download_video, url, current_index + 1)
             
             if not file_path:
                 await bot.send_message(admin_id, f"❌ Failed to download Video #{current_index + 1}. Retrying in 5 mins.")
@@ -163,7 +161,8 @@ async def worker_job(application: Application):
             desc = config.get('desc_tmpl', 'Video #{num}').replace('{num}', str(current_index + 1))
             tags = config.get('hashtags', '').split()
             
-            vid_id = await application.loop.run_in_executor(None, upload_to_youtube, file_path, title, desc, tags)
+            # Use asyncio.to_thread for blocking call
+            vid_id = await asyncio.to_thread(upload_to_youtube, file_path, title, desc, tags)
             
             link = f"https://youtube.com/shorts/{vid_id}"
             await bot.send_message(admin_id, f"✅ Success! Uploaded: {link}")
@@ -299,9 +298,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def start_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global stop_event
     
-    # Check if worker is already running (corrected for v20+)
-    # We check if the global stop_event is clear (meaning the worker hasn't been stopped)
-    # and if there is already a running task named 'worker_job'.
+    # Check if worker is already running (v20+ fix)
     running_tasks = [task.get_name() for task in asyncio.all_tasks() if not task.done()]
     if "worker_job" in running_tasks and not stop_event.is_set():
         await update.message.reply_text("⚠️ Worker is already running.")
@@ -311,12 +308,13 @@ async def start_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         await update.message.reply_text("🔑 Checking YouTube Authentication... A browser will open for authorization.")
-        await application.loop.run_in_executor(None, get_authenticated_service)
+        # FIX: Changed application.loop.run_in_executor to asyncio.to_thread
+        await asyncio.to_thread(get_authenticated_service)
     except Exception as e:
         await update.message.reply_text(f"⚠️ Auth Error: {e}\nCheck the Render logs!")
         return
 
-    # Start the worker job as a persistent background task (this is the scheduler)
+    # Start the worker job as a persistent background task (the scheduler)
     application.create_task(worker_job(application), name="worker_job")
     await update.message.reply_text("🚀 Upload Worker Started!")
 
@@ -334,7 +332,6 @@ async def post_init(application: Application):
 def main():
     global application
     
-    # Use ApplicationBuilder for v20+
     application = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
     conv_handler = ConversationHandler(
@@ -357,7 +354,6 @@ def main():
 
     print(f"Bot Started on Token: {BOT_TOKEN[:10]}...")
     
-    # Run the bot
     application.run_polling()
 
 if __name__ == '__main__':
